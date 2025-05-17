@@ -10,7 +10,7 @@ if ($conn->connect_error) {
 
 // Redirect if already logged in
 if (isset($_SESSION['user_id'])) {
-    header("Location: mainpage.php"); // Changed to redirect to account page
+    header("Location: mainpage.php");
     exit();
 }
 
@@ -40,7 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (password_verify($password, $user['password_hash'])) {
                     $_SESSION['user_id'] = $user['id'];
                     $_SESSION['user_email'] = $user['email'];
-                    $_SESSION['user_name'] = $user['name']; // Store user's name in session
+                    $_SESSION['user_name'] = $user['name'];
 
                     // Regenerate session ID to prevent session fixation
                     session_regenerate_id(true);
@@ -51,9 +51,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $sub_stmt->execute();
                     $sub_res = $sub_stmt->get_result();
                     
-                    // Always redirect to account page after login
-                    header("Location: mainpage.php");
-                    exit();
+                    if ($sub_res->num_rows > 0) {
+                        header("Location: mainpage.php");
+                        exit();
+                    } else {
+                        header("Location: sub.php");
+                        exit();
+                    }
                 } else {
                     // Log failed login attempts
                     error_log("Failed login attempt for email: $email");
@@ -210,7 +214,7 @@ $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
             </div>
             
             <div class="additional-links text-center">
-                <p>New to AdduFlix? <a href="acc.php">Sign up now</a></p>
+                <p>New to AdduFlix? <a href="register.php">Sign up now</a></p>
                 <p><a href="forgot-password.php">Need help?</a></p>
             </div>
         </form>
@@ -220,7 +224,6 @@ $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function() {
-        // Password visibility toggle
         const passwordField = document.getElementById('password');
         const togglePassword = document.getElementById('togglePassword');
         
