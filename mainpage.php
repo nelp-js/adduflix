@@ -1,102 +1,94 @@
 <?php
-$conn = new mysqli('localhost', 'root', '', 'adduflix');
 session_start();
+$conn = new mysqli('localhost', 'root', '', 'adduflix');
 
-$user_id = $_SESSION['user_id'] ?? null;
+if (!isset($_SESSION['user_id'])) {
+    header("Location: start.php");
+    exit();
+}
 
-$result = $conn->query("SELECT * FROM Content WHERE status='active'");
+// Handle logout
+if (isset($_POST['logout'])) {
+    session_unset();
+    session_destroy();
+    header("Location: start.php");
+    exit();
+}
+
+$user_id = $_SESSION['user_id'];
+
+// Fetch content
+$content_result = $conn->query("SELECT * FROM Content WHERE status = 'active'");
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <title>Main Page</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
-        .content-card {
+        .content-box {
+            transition: all 0.3s ease;
             cursor: pointer;
-            transition: all 0.3s ease-in-out;
         }
-        .expanded {
+
+        .content-box.expanded {
             transform: scale(1.05);
-            box-shadow: 0 0 20px rgba(0,0,0,0.2);
             background-color: #f8f9fa;
         }
-        .get-started {
+
+        .watch-btn {
             display: none;
         }
-        .expanded .get-started {
+
+        .content-box.expanded .watch-btn {
             display: block;
-        }
-        .navbar-nav .nav-item .nav-link.user-icon {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .navbar-nav .nav-item .nav-link.user-icon svg {
-            width: 24px;
-            height: 24px;
         }
     </style>
 </head>
-<body class="bg-light">
+<body>
 
 <!-- Navbar -->
-<nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm">
-  <div class="container">
-    <a class="navbar-brand" href="mainpage.php">StreamApp</a>
-
-    <div class="collapse navbar-collapse justify-content-end" id="navbarNav">
-      <ul class="navbar-nav">
-        <li class="nav-item">
-          <a class="nav-link user-icon" href="userinfo.php" title="User Info">
-            <!-- Simple User Icon SVG -->
-            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-person-circle" viewBox="0 0 16 16">
-              <path d="M13.468 12.37C12.758 11.226 11.555 10.5 10 10.5c-1.555 0-2.758.726-3.468 1.87A6.987 6.987 0 0 1 8 15a6.987 6.987 0 0 1 5.468-2.63z"/>
-              <path fill-rule="evenodd" d="M8 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1z"/>
-            </svg>
-            User
-          </a>
-        </li>
-      </ul>
+<nav class="navbar navbar-expand-lg navbar-light bg-light mb-4">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="#">Main Page</a>
+    <div class="d-flex align-items-center">
+        <a href="userinfo.php" class="btn btn-outline-secondary me-2">
+            <i class="bi bi-person"></i>
+        </a>
+        <form method="post" class="d-inline">
+            <button type="submit" name="logout" class="btn btn-outline-danger">Logout</button>
+        </form>
     </div>
   </div>
 </nav>
 
-<div class="container mt-4">
-    <!-- Review Success Alert -->
-    <?php if (isset($_GET['review']) && $_GET['review'] == 'success'): ?>
-        <div class="alert alert-success alert-dismissible fade show" role="alert">
-            Review submitted successfully!
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-        </div>
-    <?php endif; ?>
-
-    <h2>Main Page - Choose Content</h2>
-    <div class="row">
-        <?php while ($row = $result->fetch_assoc()): ?>
-            <div class="col-md-4 mb-4">
-                <div class="card content-card" onclick="expandCard(this)">
-                    <img src="https://via.placeholder.com/300x200?text=<?php echo urlencode($row['title']); ?>" class="card-img-top">
-                    <div class="card-body">
-                        <h5 class="card-title"><?php echo $row['title']; ?></h5>
-                        <p class="card-text"><?php echo $row['genre']; ?></p>
-                        <div class="get-started">
-                            <p><?php echo $row['description']; ?></p>
-                            <a href="view.php?content_id=<?php echo $row['id']; ?>" class="btn btn-primary">Watch Now</a>
-                        </div>
-                    </div>
+<div class="container">
+    <div class="row g-4">
+        <?php while ($row = $content_result->fetch_assoc()): ?>
+            <div class="col-md-4">
+                <div class="card content-box p-3" onclick="expandBox(this)">
+                    <h5 class="card-title"><?php echo htmlspecialchars($row['title']); ?></h5>
+                    <p class="card-text"><?php echo htmlspecialchars($row['genre']); ?></p>
+                    <form action="review.php" method="post" class="watch-btn">
+                        <input type="hidden" name="content_id" value="<?php echo $row['id']; ?>">
+                        <button type="submit" name="watch" class="btn btn-primary">Watch Now</button>
+                    </form>
                 </div>
             </div>
         <?php endwhile; ?>
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    function expandCard(card) {
-        document.querySelectorAll('.content-card').forEach(function(c) {
-            c.classList.remove('expanded');
+    function expandBox(card) {
+        // Collapse all others
+        document.querySelectorAll('.content-box').forEach(box => {
+            box.classList.remove('expanded');
         });
+
+        // Expand clicked box
         card.classList.add('expanded');
     }
 </script>
