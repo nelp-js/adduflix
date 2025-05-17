@@ -1,11 +1,13 @@
 <?php
 session_start();
 
+// Database connection with error handling
 $conn = new mysqli('localhost', 'root', '', 'adduflix');
 if ($conn->connect_error) {
     die("Connection failed: " . $conn->connect_error);
 }
 
+// Redirect if not logged in
 if (!isset($_SESSION['user_id'])) {
     header("Location: start.php");
     exit();
@@ -16,77 +18,106 @@ $error = '';
 $success = '';
 $is_editing = false;
 
-// Handle Delete - now with proper foreign key constraint handling
+// Generate CSRF token
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+// Handle Delete
 if (isset($_POST['delete'])) {
-    // Start transaction for atomic operations
-    $conn->begin_transaction();
-    
-    try {
-        // 1. First delete payments (has FK to both users and subscriptions)
-        if (!$conn->query("DELETE FROM Payments WHERE user_id = $user_id")) {
-            throw new Exception("Failed to delete payments: " . $conn->error);
+    // Verify CSRF token
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+        $error = "Invalid request. Please try again.";
+    } else {
+        // Start transaction for atomic operations
+        $conn->begin_transaction();
+        
+        try {
+            // Delete all related records in proper order
+            $tables = [
+                'Payments', 
+                'Subscriptions', 
+                'ViewingHistory', 
+                'Reviews'
+            ];
+            
+            foreach ($tables as $table) {
+                if (!$conn->query("DELETE FROM $table WHERE user_id = $user_id")) {
+                    throw new Exception("Failed to delete from $table: " . $conn->error);
+                }
+            }
+            
+            // Finally delete the user
+            if (!$conn->query("DELETE FROM Users WHERE id = $user_id")) {
+                throw new Exception("Failed to delete user: " . $conn->error);
+            }
+            
+            $conn->commit();
+            
+            // Clear session and redirect
+            session_unset();
+            session_destroy();
+            header("Location: start.php");
+            exit();
+            
+        } catch (Exception $e) {
+            $conn->rollback();
+            $error = "Account deletion failed. Please try again later.";
+            error_log("User deletion error: " . $e->getMessage());
         }
-        
-        // 2. Then delete subscriptions (has FK to users)
-        if (!$conn->query("DELETE FROM Subscriptions WHERE user_id = $user_id")) {
-            throw new Exception("Failed to delete subscriptions: " . $conn->error);
-        }
-        
-        // 3. Delete viewing history
-        if (!$conn->query("DELETE FROM ViewingHistory WHERE user_id = $user_id")) {
-            throw new Exception("Failed to delete viewing history: " . $conn->error);
-        }
-        
-        // 4. Delete reviews
-        if (!$conn->query("DELETE FROM Reviews WHERE user_id = $user_id")) {
-            throw new Exception("Failed to delete reviews: " . $conn->error);
-        }
-        
-        // 5. Finally delete the user
-        if (!$conn->query("DELETE FROM Users WHERE id = $user_id")) {
-            throw new Exception("Failed to delete user: " . $conn->error);
-        }
-        
-        // If we got here, all deletions succeeded
-        $conn->commit();
-        
-        // Clear session and redirect
-        session_unset();
-        session_destroy();
-        header("Location: start.php");
-        exit();
-        
-    } catch (Exception $e) {
-        $conn->rollback();
-        $error = "Account deletion failed. Please try again later.";
-        error_log("User deletion error: " . $e->getMessage());
     }
 }
 
 // Handle Update
 if (isset($_POST['update'])) {
-    $new_name = trim($_POST['name']);
-    $new_email = trim($_POST['email']);
-    $new_password = $_POST['password'];
-
-    if (empty($new_name) || empty($new_email)) {
-        $error = "Name and Email cannot be empty.";
-        $is_editing = true;
+    // Verify CSRF token
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+        $error = "Invalid request. Please try again.";
     } else {
-        $update_sql = "UPDATE Users SET name = ?, email = ?" . (!empty($new_password) ? ", password_hash = ?" : "") . " WHERE id = ?";
-        $stmt = $conn->prepare($update_sql);
+        $new_name = trim($_POST['name']);
+        $new_email = trim($_POST['email']);
+        $new_password = $_POST['password'];
 
-        if (!empty($new_password)) {
-            $password_hash = password_hash($new_password, PASSWORD_DEFAULT);
-            $stmt->bind_param("sssi", $new_name, $new_email, $password_hash, $user_id);
+        if (empty($new_name) || empty($new_email)) {
+            $error = "Name and Email cannot be empty.";
+            $is_editing = true;
+        } elseif (!filter_var($new_email, FILTER_VALIDATE_EMAIL)) {
+            $error = "Invalid email format.";
+            $is_editing = true;
         } else {
-            $stmt->bind_param("ssi", $new_name, $new_email, $user_id);
-        }
+            // Check if email is already taken by another user
+            $stmt = $conn->prepare("SELECT id FROM Users WHERE email = ? AND id != ?");
+            $stmt->bind_param("si", $new_email, $user_id);
+            $stmt->execute();
+            
+            if ($stmt->get_result()->num_rows > 0) {
+                $error = "Email already in use by another account.";
+                $is_editing = true;
+            } else {
+                $update_sql = "UPDATE Users SET name = ?, email = ?" . 
+                              (!empty($new_password) ? ", password_hash = ?" : "") . 
+                              " WHERE id = ?";
+                $stmt = $conn->prepare($update_sql);
 
-        if ($stmt->execute()) {
-            $success = "User updated successfully.";
-        } else {
-            $error = "Error updating user: " . $stmt->error;
+                if (!empty($new_password)) {
+                    if (strlen($new_password) < 8) {
+                        $error = "Password must be at least 8 characters.";
+                        $is_editing = true;
+                    } else {
+                        $password_hash = password_hash($new_password, PASSWORD_DEFAULT);
+                        $stmt->bind_param("sssi", $new_name, $new_email, $password_hash, $user_id);
+                    }
+                } else {
+                    $stmt->bind_param("ssi", $new_name, $new_email, $user_id);
+                }
+
+                if (empty($error) && $stmt->execute()) {
+                    $success = "Profile updated successfully!";
+                    $_SESSION['user_name'] = $new_name; // Update session name
+                } else if (empty($error)) {
+                    $error = "Error updating profile: " . $stmt->error;
+                }
+            }
         }
     }
 }
@@ -98,110 +129,245 @@ if (isset($_POST['edit_mode'])) {
     $is_editing = false;
 }
 
-// Back button
-if (isset($_POST['back'])) {
-    header("Location: mainpage.php");
-    exit();
-}
-
 // Fetch current user info
-$sql = "SELECT name, email FROM Users WHERE id = $user_id";
-$result = $conn->query($sql);
-if (!$result) {
-    die("Error fetching user info: " . $conn->error);
-}
+$stmt = $conn->prepare("SELECT name, email FROM Users WHERE id = ?");
+$stmt->bind_param("i", $user_id);
+$stmt->execute();
+$result = $stmt->get_result();
 $user = $result->fetch_assoc();
-
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>User Info</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Profile - AdduFlix</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
-        .delete-btn { transition: all 0.3s; }
-        .delete-btn:hover { transform: scale(1.05); }
+        :root {
+            --primary-color: #e50914;
+            --dark-color: #141414;
+            --light-color: #f8f9fa;
+            --gray-color: #6c757d;
+        }
+        
+        body {
+            background-color: var(--dark-color);
+            color: var(--light-color);
+            min-height: 100vh;
+        }
+        
+        .profile-container {
+            max-width: 800px;
+            background-color: rgba(0, 0, 0, 0.75);
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+        }
+        
+        .profile-header {
+            background-color: var(--primary-color);
+            padding: 2rem;
+            color: white;
+        }
+        
+        .profile-body {
+            padding: 2rem;
+        }
+        
+        .form-control, .form-select {
+            background-color: #333;
+            border: 1px solid #444;
+            color: white;
+        }
+        
+        .form-control:focus, .form-select:focus {
+            background-color: #444;
+            color: white;
+            border-color: #555;
+            box-shadow: 0 0 0 0.25rem rgba(229, 9, 20, 0.25);
+        }
+        
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+        }
+        
+        .btn-primary:hover {
+            background-color: #f6121d;
+            border-color: #f6121d;
+        }
+        
+        .btn-outline-danger {
+            color: var(--primary-color);
+            border-color: var(--primary-color);
+        }
+        
+        .btn-outline-danger:hover {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        
+        .info-item {
+            padding: 1rem;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 5px;
+            margin-bottom: 1rem;
+        }
+        
+        .info-label {
+            color: var(--gray-color);
+            font-size: 0.9rem;
+            margin-bottom: 0.3rem;
+        }
+        
+        .info-value {
+            font-size: 1.1rem;
+        }
+        
+        .password-strength {
+            height: 4px;
+            background-color: #333;
+            border-radius: 2px;
+            margin-top: 5px;
+            overflow: hidden;
+        }
+        
+        .password-strength-bar {
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        .password-requirements {
+            font-size: 0.85rem;
+            color: var(--gray-color);
+            margin-top: 0.5rem;
+        }
+        
+        .requirement {
+            display: flex;
+            align-items: center;
+            margin-bottom: 0.3rem;
+        }
+        
+        .requirement i {
+            margin-right: 5px;
+            font-size: 0.7rem;
+        }
+        
+        .requirement.valid {
+            color: #28a745;
+        }
     </style>
 </head>
-<body class="bg-light">
-<div class="container mt-5" style="max-width: 600px;">
-    <div class="card shadow">
-        <div class="card-header bg-primary text-white">
-            <h2 class="mb-0">User Profile</h2>
+<body>
+<div class="container py-5">
+    <div class="profile-container">
+        <div class="profile-header">
+            <div class="d-flex justify-content-between align-items-center">
+                <h2><i class="bi bi-person-circle"></i> My Profile</h2>
+                <a href="mainpage.php" class="btn btn-outline-light">
+                    <i class="bi bi-arrow-left"></i> Back to Home
+                </a>
+            </div>
         </div>
         
-        <div class="card-body">
+        <div class="profile-body">
             <?php if ($error): ?>
-                <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?php echo htmlspecialchars($error); ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
             <?php endif; ?>
 
             <?php if ($success): ?>
-                <div class="alert alert-success"><?php echo htmlspecialchars($success); ?></div>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?php echo htmlspecialchars($success); ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
             <?php endif; ?>
 
             <?php if (!$is_editing): ?>
                 <div class="mb-4">
-                    <h4>Account Information</h4>
-                    <div class="mb-3">
-                        <label class="form-label text-muted">Name</label>
-                        <p class="form-control-plaintext"><?php echo htmlspecialchars($user['name']); ?></p>
+                    <div class="info-item">
+                        <div class="info-label">Name</div>
+                        <div class="info-value"><?php echo htmlspecialchars($user['name']); ?></div>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label text-muted">Email</label>
-                        <p class="form-control-plaintext"><?php echo htmlspecialchars($user['email']); ?></p>
+                    
+                    <div class="info-item">
+                        <div class="info-label">Email</div>
+                        <div class="info-value"><?php echo htmlspecialchars($user['email']); ?></div>
                     </div>
                 </div>
 
-                <div class="d-flex justify-content-between">
-                    <form method="post" class="me-2">
+                <div class="d-flex flex-wrap gap-2">
+                    <form method="post">
+                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                         <button type="submit" name="edit_mode" class="btn btn-primary">
                             <i class="bi bi-pencil"></i> Edit Profile
                         </button>
                     </form>
                     
                     <form method="post">
-                        <button type="submit" name="back" class="btn btn-secondary">
-                            <i class="bi bi-arrow-left"></i> Back
-                        </button>
-                    </form>
-                    
-                    <form method="post" class="ms-auto">
-                        <button type="submit" name="delete" class="btn btn-danger delete-btn"
-                            onclick="return confirm('WARNING: This will permanently delete your account and all associated data. Continue?')">
+                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                        <button type="submit" name="delete" class="btn btn-outline-danger"
+                            onclick="return confirm('WARNING: This will permanently delete your account and all data. Continue?')">
                             <i class="bi bi-trash"></i> Delete Account
                         </button>
                     </form>
                 </div>
 
             <?php else: ?>
-                <h4>Edit Profile</h4>
                 <form method="post">
-                    <div class="mb-3">
-                        <label for="nameInput" class="form-label">Name</label>
-                        <input id="nameInput" type="text" name="name" class="form-control" 
-                            value="<?php echo htmlspecialchars($user['name']); ?>" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="emailInput" class="form-label">Email</label>
-                        <input id="emailInput" type="email" name="email" class="form-control" 
-                            value="<?php echo htmlspecialchars($user['email']); ?>" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="passwordInput" class="form-label">New Password</label>
-                        <input id="passwordInput" type="password" name="password" class="form-control" 
-                            placeholder="Leave blank to keep current password">
-                        <div class="form-text">Minimum 8 characters</div>
+                    <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                    
+                    <div class="mb-4">
+                        <h4 class="mb-4"><i class="bi bi-pencil-square"></i> Edit Profile</h4>
+                        
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Name</label>
+                            <input type="text" class="form-control" id="name" name="name" 
+                                   value="<?php echo htmlspecialchars($user['name']); ?>" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="email" class="form-label">Email</label>
+                            <input type="email" class="form-control" id="email" name="email" 
+                                   value="<?php echo htmlspecialchars($user['email']); ?>" required>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label for="password" class="form-label">New Password</label>
+                            <input type="password" class="form-control" id="password" name="password" 
+                                   placeholder="Leave blank to keep current password">
+                            <div class="password-strength">
+                                <div class="password-strength-bar" id="passwordStrengthBar"></div>
+                            </div>
+                            <div class="password-requirements">
+                                <div class="requirement" id="lengthReq">
+                                    <i class="bi bi-circle"></i>
+                                    <span>At least 8 characters</span>
+                                </div>
+                                <div class="requirement" id="complexityReq">
+                                    <i class="bi bi-circle"></i>
+                                    <span>Contains letters and numbers</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
-                    <div class="d-flex justify-content-between mt-4">
-                        <div>
-                            <button type="submit" name="update" class="btn btn-success me-2">
-                                <i class="bi bi-check"></i> Save Changes
+                    <div class="d-flex flex-wrap justify-content-between gap-2">
+                        <div class="d-flex gap-2">
+                            <button type="submit" name="update" class="btn btn-primary">
+                                <i class="bi bi-check-circle"></i> Save Changes
                             </button>
-                            <button type="submit" name="cancel" class="btn btn-warning">
-                                <i class="bi bi-x"></i> Cancel
+                            <button type="submit" name="cancel" class="btn btn-secondary">
+                                <i class="bi bi-x-circle"></i> Cancel
                             </button>
                         </div>
+                        
                         <button type="submit" name="delete" class="btn btn-outline-danger"
                             onclick="return confirm('WARNING: This will permanently delete your account. Continue?')">
                             <i class="bi bi-trash"></i> Delete Account
@@ -213,7 +379,45 @@ $user = $result->fetch_assoc();
     </div>
 </div>
 
-<!-- Bootstrap Icons -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Password strength indicator
+        const passwordInput = document.getElementById('password');
+        const strengthBar = document.getElementById('passwordStrengthBar');
+        
+        if (passwordInput) {
+            passwordInput.addEventListener('input', function() {
+                const password = this.value;
+                let strength = 0;
+                
+                // Length check
+                if (password.length >= 8) {
+                    strength += 50;
+                    document.getElementById('lengthReq').classList.add('valid');
+                    document.getElementById('lengthReq').querySelector('i').className = 'bi bi-check-circle';
+                } else {
+                    document.getElementById('lengthReq').classList.remove('valid');
+                    document.getElementById('lengthReq').querySelector('i').className = 'bi bi-circle';
+                }
+                
+                // Complexity check
+                if (/[a-zA-Z]/.test(password) && /\d/.test(password)) {
+                    strength += 50;
+                    document.getElementById('complexityReq').classList.add('valid');
+                    document.getElementById('complexityReq').querySelector('i').className = 'bi bi-check-circle';
+                } else {
+                    document.getElementById('complexityReq').classList.remove('valid');
+                    document.getElementById('complexityReq').querySelector('i').className = 'bi bi-circle';
+                }
+                
+                // Update strength bar
+                strengthBar.style.width = strength + '%';
+                strengthBar.style.backgroundColor = strength < 50 ? '#dc3545' : 
+                                                  strength < 80 ? '#ffc107' : '#28a745';
+            });
+        }
+    });
+</script>
 </body>
 </html>
