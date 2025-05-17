@@ -78,3 +78,31 @@ VALUES
 ('Avengers', 'Superhero action movie', 'Action', '2019-04-26', 'active'),
 ('Inception', 'Mind-bending sci-fi thriller', 'Sci-Fi', '2010-07-16', 'active'),
 ('Friends', 'Comedy TV show', 'Comedy', '1994-09-22', 'active');
+
+-- First, drop existing constraints
+ALTER TABLE Subscriptions DROP FOREIGN KEY subscriptions_ibfk_1;
+ALTER TABLE Payments DROP FOREIGN KEY payments_ibfk_1;
+ALTER TABLE Payments DROP FOREIGN KEY payments_ibfk_2;
+ALTER TABLE ViewingHistory DROP FOREIGN KEY viewinghistory_ibfk_1;
+ALTER TABLE Reviews DROP FOREIGN KEY reviews_ibfk_1;
+
+-- Then recreate them with ON DELETE CASCADE
+ALTER TABLE Subscriptions 
+ADD CONSTRAINT fk_user_subscription 
+FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE;
+
+ALTER TABLE Payments 
+ADD CONSTRAINT fk_user_payment 
+FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE;
+
+ALTER TABLE Payments 
+ADD CONSTRAINT fk_subscription_payment 
+FOREIGN KEY (subscription_id) REFERENCES Subscriptions(id) ON DELETE SET NULL;
+
+ALTER TABLE ViewingHistory 
+ADD CONSTRAINT fk_user_viewing 
+FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE;
+
+ALTER TABLE Reviews 
+ADD CONSTRAINT fk_user_review 
+FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE;
