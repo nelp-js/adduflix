@@ -10,7 +10,7 @@ if ($conn->connect_error) {
 
 // Redirect if already logged in
 if (isset($_SESSION['user_id'])) {
-    header("Location: mainpage.php");
+    header("Location: mainpage.php"); // Changed to redirect to account page
     exit();
 }
 
@@ -29,7 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = "Please fill in both fields.";
         } else {
             // Use prepared statements to prevent SQL injection
-            $stmt = $conn->prepare("SELECT id, email, password_hash FROM Users WHERE email = ?");
+            $stmt = $conn->prepare("SELECT id, email, password_hash, name FROM Users WHERE email = ?");
             $stmt->bind_param("s", $email);
             $stmt->execute();
             $result = $stmt->get_result();
@@ -40,6 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (password_verify($password, $user['password_hash'])) {
                     $_SESSION['user_id'] = $user['id'];
                     $_SESSION['user_email'] = $user['email'];
+                    $_SESSION['user_name'] = $user['name']; // Store user's name in session
 
                     // Regenerate session ID to prevent session fixation
                     session_regenerate_id(true);
@@ -50,13 +51,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $sub_stmt->execute();
                     $sub_res = $sub_stmt->get_result();
                     
-                    if ($sub_res->num_rows > 0) {
-                        header("Location: mainpage.php");
-                        exit();
-                    } else {
-                        header("Location: sub.php");
-                        exit();
-                    }
+                    // Always redirect to account page after login
+                    header("Location: mainpage.php");
+                    exit();
                 } else {
                     // Log failed login attempts
                     error_log("Failed login attempt for email: $email");
@@ -153,6 +150,19 @@ $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
         .additional-links a:hover {
             text-decoration: underline;
         }
+        
+        .password-toggle {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            cursor: pointer;
+            color: #8c8c8c;
+        }
+        
+        .password-toggle:hover {
+            color: var(--light-color);
+        }
     </style>
 </head>
 <body>
@@ -172,17 +182,20 @@ $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
         <form method="post">
             <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
             
-            <div class="form-floating mb-3">
+            <div class="form-floating mb-3 position-relative">
                 <input type="email" class="form-control" id="email" name="email" 
                        placeholder="name@example.com" required
                        value="<?php echo htmlspecialchars($email); ?>">
                 <label for="email">Email address</label>
             </div>
             
-            <div class="form-floating mb-4">
+            <div class="form-floating mb-4 position-relative">
                 <input type="password" class="form-control" id="password" 
                        name="password" placeholder="Password" required>
                 <label for="password">Password</label>
+                <span class="password-toggle" id="togglePassword">
+                    <i class="bi bi-eye"></i>
+                </span>
             </div>
             
             <button type="submit" class="btn btn-primary w-100 py-2 mb-3">
@@ -190,14 +203,14 @@ $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
             </button>
             
             <div class="form-check mb-3">
-                <input class="form-check-input" type="checkbox" id="rememberMe">
+                <input class="form-check-input" type="checkbox" id="rememberMe" name="rememberMe">
                 <label class="form-check-label" for="rememberMe">
                     Remember me
                 </label>
             </div>
             
             <div class="additional-links text-center">
-                <p>New to AdduFlix? <a href="register.php">Sign up now</a></p>
+                <p>New to AdduFlix? <a href="acc.php">Sign up now</a></p>
                 <p><a href="forgot-password.php">Need help?</a></p>
             </div>
         </form>
@@ -206,21 +219,36 @@ $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // Add password visibility toggle
     document.addEventListener('DOMContentLoaded', function() {
+        // Password visibility toggle
         const passwordField = document.getElementById('password');
-        const togglePassword = document.createElement('span');
-        togglePassword.innerHTML = '<i class="bi bi-eye"></i>';
-        togglePassword.className = 'position-absolute end-0 top-50 translate-middle-y me-3';
-        togglePassword.style.cursor = 'pointer';
-        
-        passwordField.parentElement.style.position = 'relative';
-        passwordField.parentElement.appendChild(togglePassword);
+        const togglePassword = document.getElementById('togglePassword');
         
         togglePassword.addEventListener('click', function() {
             const type = passwordField.getAttribute('type') === 'password' ? 'text' : 'password';
             passwordField.setAttribute('type', type);
             this.innerHTML = type === 'password' ? '<i class="bi bi-eye"></i>' : '<i class="bi bi-eye-slash"></i>';
+        });
+        
+        // Remember me functionality
+        const rememberMe = document.getElementById('rememberMe');
+        const emailField = document.getElementById('email');
+        
+        // Check if there's a saved email in localStorage
+        if (localStorage.getItem('rememberEmail') && localStorage.getItem('rememberEmail') === 'true') {
+            rememberMe.checked = true;
+            emailField.value = localStorage.getItem('savedEmail') || '';
+        }
+        
+        // Save email when remember me is checked
+        document.querySelector('form').addEventListener('submit', function() {
+            if (rememberMe.checked) {
+                localStorage.setItem('rememberEmail', 'true');
+                localStorage.setItem('savedEmail', emailField.value);
+            } else {
+                localStorage.removeItem('rememberEmail');
+                localStorage.removeItem('savedEmail');
+            }
         });
     });
 </script>
