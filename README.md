@@ -4,6 +4,7 @@ CREATE TABLE Users (
     email VARCHAR(100) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    deleted_at DATETIME DEFAULT NULL,
     last_watched_at DATETIME
 );
 
@@ -106,3 +107,18 @@ FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE;
 ALTER TABLE Reviews 
 ADD CONSTRAINT fk_user_review 
 FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE;
+
+DELIMITER $$
+
+CREATE TRIGGER before_user_soft_delete
+BEFORE UPDATE ON Users
+FOR EACH ROW
+BEGIN
+    -- Check if this update is meant to soft-delete the user
+    -- (assuming we set some flag or directly update deleted_at)
+    IF NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL THEN
+        -- Set the deletion timestamp to current time
+        SET NEW.deleted_at = CURRENT_TIMESTAMP;
+END$$
+
+DELIMITER ;
