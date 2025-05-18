@@ -214,7 +214,7 @@ $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
             </div>
             
             <div class="additional-links text-center">
-                <p>New to AdduFlix? <a href="register.php">Sign up now</a></p>
+                <p>New to AdduFlix? <a href="acc.php">Sign up now</a></p>
                 <p><a href="forgot-password.php">Need help?</a></p>
             </div>
         </form>
