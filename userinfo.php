@@ -23,33 +23,27 @@ if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
-// Handle Delete
+// Handle Delete (now soft delete)
 if (isset($_POST['delete'])) {
     // Verify CSRF token
     if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
         $error = "Invalid request. Please try again.";
     } else {
-        // Start transaction for atomic operations
-        $conn->begin_transaction();
-        
         try {
-            // Delete all related records in proper order
-            $tables = [
-                'Payments', 
-                'Subscriptions', 
-                'ViewingHistory', 
-                'Reviews'
-            ];
+            // Start transaction for atomic operations
+            $conn->begin_transaction();
             
-            foreach ($tables as $table) {
-                if (!$conn->query("DELETE FROM $table WHERE user_id = $user_id")) {
-                    throw new Exception("Failed to delete from $table: " . $conn->error);
-                }
+            // Deactivate all active subscriptions
+            if (!$conn->query("UPDATE Subscriptions SET is_active = FALSE WHERE user_id = $user_id AND is_active = TRUE")) {
+                throw new Exception("Failed to deactivate subscriptions: " . $conn->error);
             }
             
-            // Finally delete the user
-            if (!$conn->query("DELETE FROM Users WHERE id = $user_id")) {
-                throw new Exception("Failed to delete user: " . $conn->error);
+            // Soft delete the user by setting deleted_at timestamp
+            $stmt = $conn->prepare("UPDATE Users SET deleted_at = NOW() WHERE id = ?");
+            $stmt->bind_param("i", $user_id);
+            
+            if (!$stmt->execute()) {
+                throw new Exception("Failed to soft delete user: " . $conn->error);
             }
             
             $conn->commit();
@@ -62,8 +56,8 @@ if (isset($_POST['delete'])) {
             
         } catch (Exception $e) {
             $conn->rollback();
-            $error = "Account deletion failed. Please try again later.";
-            error_log("User deletion error: " . $e->getMessage());
+            $error = "Account deactivation failed. Please try again later.";
+            error_log("User soft deletion error: " . $e->getMessage());
         }
     }
 }
@@ -85,8 +79,8 @@ if (isset($_POST['update'])) {
             $error = "Invalid email format.";
             $is_editing = true;
         } else {
-            // Check if email is already taken by another user
-            $stmt = $conn->prepare("SELECT id FROM Users WHERE email = ? AND id != ?");
+            // Check if email is already taken by another active user
+            $stmt = $conn->prepare("SELECT id FROM Users WHERE email = ? AND id != ? AND deleted_at IS NULL");
             $stmt->bind_param("si", $new_email, $user_id);
             $stmt->execute();
             
@@ -96,7 +90,7 @@ if (isset($_POST['update'])) {
             } else {
                 $update_sql = "UPDATE Users SET name = ?, email = ?" . 
                               (!empty($new_password) ? ", password_hash = ?" : "") . 
-                              " WHERE id = ?";
+                              " WHERE id = ? AND deleted_at IS NULL";
                 $stmt = $conn->prepare($update_sql);
 
                 if (!empty($new_password)) {
@@ -129,11 +123,20 @@ if (isset($_POST['edit_mode'])) {
     $is_editing = false;
 }
 
-// Fetch current user info
-$stmt = $conn->prepare("SELECT name, email FROM Users WHERE id = ?");
+// Fetch current user info (only if not soft-deleted)
+$stmt = $conn->prepare("SELECT name, email FROM Users WHERE id = ? AND deleted_at IS NULL");
 $stmt->bind_param("i", $user_id);
 $stmt->execute();
 $result = $stmt->get_result();
+
+if ($result->num_rows === 0) {
+    // User not found or has been soft-deleted
+    session_unset();
+    session_destroy();
+    header("Location: start.php");
+    exit();
+}
+
 $user = $result->fetch_assoc();
 ?>
 <!DOCTYPE html>
@@ -313,8 +316,8 @@ $user = $result->fetch_assoc();
                     <form method="post">
                         <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                         <button type="submit" name="delete" class="btn btn-outline-danger"
-                            onclick="return confirm('WARNING: This will permanently delete your account and all data. Continue?')">
-                            <i class="bi bi-trash"></i> Delete Account
+                            onclick="return confirm('This will deactivate your account. You can contact support to recover it within 30 days. Continue?')">
+                            <i class="bi bi-trash"></i> Deactivate Account
                         </button>
                     </form>
                 </div>
@@ -369,8 +372,8 @@ $user = $result->fetch_assoc();
                         </div>
                         
                         <button type="submit" name="delete" class="btn btn-outline-danger"
-                            onclick="return confirm('WARNING: This will permanently delete your account. Continue?')">
-                            <i class="bi bi-trash"></i> Delete Account
+                            onclick="return confirm('This will deactivate your account. You can contact support to recover it within 30 days. Continue?')">
+                            <i class="bi bi-trash"></i> Deactivate Account
                         </button>
                     </div>
                 </form>
