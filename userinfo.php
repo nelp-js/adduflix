@@ -23,37 +23,48 @@ if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
-// Handle Delete
+// Handle Delete (now soft delete)
 if (isset($_POST['delete'])) {
+    // Verify CSRF token
     if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
         $error = "Invalid request. Please try again.";
     } else {
-        $conn->begin_transaction();
         try {
-            $tables = ['Payments', 'Subscriptions', 'ViewingHistory', 'Reviews'];
-            foreach ($tables as $table) {
-                if (!$conn->query("DELETE FROM $table WHERE user_id = $user_id")) {
-                    throw new Exception("Failed to delete from $table: " . $conn->error);
-                }
+            // Start transaction for atomic operations
+            $conn->begin_transaction();
+            
+            // Deactivate all active subscriptions
+            if (!$conn->query("UPDATE Subscriptions SET is_active = FALSE WHERE user_id = $user_id AND is_active = TRUE")) {
+                throw new Exception("Failed to deactivate subscriptions: " . $conn->error);
             }
-            if (!$conn->query("DELETE FROM Users WHERE id = $user_id")) {
-                throw new Exception("Failed to delete user: " . $conn->error);
+            
+            // Soft delete the user by setting deleted_at timestamp
+            $stmt = $conn->prepare("UPDATE Users SET deleted_at = NOW() WHERE id = ?");
+            $stmt->bind_param("i", $user_id);
+            
+            if (!$stmt->execute()) {
+                throw new Exception("Failed to soft delete user: " . $conn->error);
             }
+            
             $conn->commit();
+            
+            // Clear session and redirect
             session_unset();
             session_destroy();
             header("Location: start.php");
             exit();
+            
         } catch (Exception $e) {
             $conn->rollback();
-            $error = "Account deletion failed. Please try again later.";
-            error_log("User deletion error: " . $e->getMessage());
+            $error = "Account deactivation failed. Please try again later.";
+            error_log("User soft deletion error: " . $e->getMessage());
         }
     }
 }
 
 // Handle Update
 if (isset($_POST['update'])) {
+    // Verify CSRF token
     if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
         $error = "Invalid request. Please try again.";
     } else {
@@ -68,16 +79,18 @@ if (isset($_POST['update'])) {
             $error = "Invalid email format.";
             $is_editing = true;
         } else {
-            $stmt = $conn->prepare("SELECT id FROM Users WHERE email = ? AND id != ?");
+            // Check if email is already taken by another active user
+            $stmt = $conn->prepare("SELECT id FROM Users WHERE email = ? AND id != ? AND deleted_at IS NULL");
             $stmt->bind_param("si", $new_email, $user_id);
             $stmt->execute();
+            
             if ($stmt->get_result()->num_rows > 0) {
                 $error = "Email already in use by another account.";
                 $is_editing = true;
             } else {
                 $update_sql = "UPDATE Users SET name = ?, email = ?" . 
                               (!empty($new_password) ? ", password_hash = ?" : "") . 
-                              " WHERE id = ?";
+                              " WHERE id = ? AND deleted_at IS NULL";
                 $stmt = $conn->prepare($update_sql);
 
                 if (!empty($new_password)) {
@@ -94,7 +107,7 @@ if (isset($_POST['update'])) {
 
                 if (empty($error) && $stmt->execute()) {
                     $success = "Profile updated successfully!";
-                    $_SESSION['user_name'] = $new_name;
+                    $_SESSION['user_name'] = $new_name; // Update session name
                 } else if (empty($error)) {
                     $error = "Error updating profile: " . $stmt->error;
                 }
@@ -110,22 +123,31 @@ if (isset($_POST['edit_mode'])) {
     $is_editing = false;
 }
 
-// Fetch current user info
-$stmt = $conn->prepare("SELECT name, email FROM Users WHERE id = ?");
+// Fetch current user info (only if not soft-deleted)
+$stmt = $conn->prepare("SELECT name, email FROM Users WHERE id = ? AND deleted_at IS NULL");
 $stmt->bind_param("i", $user_id);
 $stmt->execute();
 $result = $stmt->get_result();
+
+if ($result->num_rows === 0) {
+    // User not found or has been soft-deleted
+    session_unset();
+    session_destroy();
+    header("Location: start.php");
+    exit();
+}
+
 $user = $result->fetch_assoc();
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>My Profile - AdduFlix</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
-<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet" />
-<style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Profile - AdduFlix</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
     :root {
         --primary-color: #004aad; 
         --dark-color:rgb(55, 52, 52);
@@ -271,80 +293,161 @@ $user = $result->fetch_assoc();
 </style>
 </head>
 <body>
-<div class="profile-container" role="main" aria-label="User Profile Container">
-    <a href="mainpage.php" class="back-button" aria-label="Back to Home">Back to Home</a>
-    <div class="profile-header" tabindex="0">
-    <h2><i class="bi bi-person-circle"></i> My Profile</h2>
-</div>
-
-<?php if ($error): ?>
-    <div class="alert alert-danger" role="alert" tabindex="0"><?=htmlspecialchars($error)?></div>
-<?php endif; ?>
-<?php if ($success): ?>
-    <div class="alert alert-success" role="alert" tabindex="0"><?=htmlspecialchars($success)?></div>
-<?php endif; ?>
-
-<?php if ($is_editing): ?>
-    <form method="POST" novalidate>
-        <input type="hidden" name="csrf_token" value="<?=htmlspecialchars($_SESSION['csrf_token'])?>" />
-        <div class="mb-3 text-start">
-            <label for="name" class="form-label">Name</label>
-            <input 
-                type="text" id="name" name="name" class="form-control" 
-                value="<?=htmlspecialchars($_POST['name'] ?? $user['name'])?>" required 
-                aria-required="true"
-            />
-        </div>
-        <div class="mb-3 text-start">
-            <label for="email" class="form-label">Email</label>
-            <input 
-                type="email" id="email" name="email" class="form-control" 
-                value="<?=htmlspecialchars($_POST['email'] ?? $user['email'])?>" required 
-                aria-required="true"
-            />
-        </div>
-        <div class="mb-1 text-start">
-            <label for="password" class="form-label">New Password <small>(leave blank to keep current)</small></label>
-            <input 
-                type="password" id="password" name="password" class="form-control" 
-                aria-describedby="passwordHelp"
-                autocomplete="new-password"
-            />
-            <div id="passwordHelp" class="password-requirements" aria-live="polite" aria-atomic="true">
-                <div class="requirement" id="lengthReq"><i class="bi bi-x-circle"></i> Minimum 8 characters</div>
-                <div class="requirement" id="upperReq"><i class="bi bi-x-circle"></i> At least one uppercase letter</div>
-                <div class="requirement" id="lowerReq"><i class="bi bi-x-circle"></i> At least one lowercase letter</div>
-                <div class="requirement" id="numberReq"><i class="bi bi-x-circle"></i> At least one number</div>
+<div class="container py-5">
+    <div class="profile-container">
+        <a href="mainpage.php" class="btn btn-outline-light">
+                    <i class="bi bi-arrow-left"></i> Back to Home
+                </a>
+        <div class="profile-header">
+            <div class="d-flex justify-content-between align-items-center">  
+                <h2><i class="bi bi-person-circle"></i> My Profile</h2>
             </div>
         </div>
+        
+        <div class="profile-body">
+            <?php if ($error): ?>
+                <div class="alert alert-danger alert-dismissible fade show">
+                    <?php echo htmlspecialchars($error); ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            <?php endif; ?>
 
-        <div class="d-flex gap-2 justify-content-center mt-4">
-            <button type="submit" name="update" class="btn btn-primary">Save</button>
-            <button type="submit" name="cancel" class="btn btn-primary">Cancel</button>
+            <?php if ($success): ?>
+                <div class="alert alert-success alert-dismissible fade show">
+                    <?php echo htmlspecialchars($success); ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            <?php endif; ?>
+
+            <?php if (!$is_editing): ?>
+                <div class="mb-4">
+                    <div class="info-item">
+                        <div class="info-label">Name</div>
+                        <div class="info-value"><?php echo htmlspecialchars($user['name']); ?></div>
+                    </div>
+                    
+                    <div class="info-item">
+                        <div class="info-label">Email</div>
+                        <div class="info-value"><?php echo htmlspecialchars($user['email']); ?></div>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap gap-2">
+                    <form method="post">
+                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                        <button type="submit" name="edit_mode" class="btn btn-primary">
+                            <i class="bi bi-pencil"></i> Edit Profile
+                        </button>
+                    </form>
+                    
+                    <form method="post">
+                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                        <button type="submit" name="delete" class="btn btn-outline-danger"
+                            onclick="return confirm('This will deactivate your account. You can contact support to recover it within 30 days. Continue?')">
+                            <i class="bi bi-trash"></i> Deactivate Account
+                        </button>
+                    </form>
+                </div>
+
+            <?php else: ?>
+                <form method="post">
+                    <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                    
+                    <div class="mb-4">
+                        <h4 class="mb-4"><i class="bi bi-pencil-square"></i> Edit Profile</h4>
+                        
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Name</label>
+                            <input type="text" class="form-control" id="name" name="name" 
+                                   value="<?php echo htmlspecialchars($user['name']); ?>" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="email" class="form-label">Email</label>
+                            <input type="email" class="form-control" id="email" name="email" 
+                                   value="<?php echo htmlspecialchars($user['email']); ?>" required>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label for="password" class="form-label">New Password</label>
+                            <input type="password" class="form-control" id="password" name="password" 
+                                   placeholder="Leave blank to keep current password">
+                            <div class="password-strength">
+                                <div class="password-strength-bar" id="passwordStrengthBar"></div>
+                            </div>
+                            <div class="password-requirements">
+                                <div class="requirement" id="lengthReq">
+                                    <i class="bi bi-circle"></i>
+                                    <span>At least 8 characters</span>
+                                </div>
+                                <div class="requirement" id="complexityReq">
+                                    <i class="bi bi-circle"></i>
+                                    <span>Contains letters and numbers</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="d-flex flex-wrap justify-content-between gap-2">
+                        <div class="d-flex gap-2">
+                            <button type="submit" name="update" class="btn btn-primary">
+                                <i class="bi bi-check-circle"></i> Save Changes
+                            </button>
+                            <button type="submit" name="cancel" class="btn btn-secondary">
+                                <i class="bi bi-x-circle"></i> Cancel
+                            </button>
+                        </div>
+                        
+                        <button type="submit" name="delete" class="btn btn-outline-danger"
+                            onclick="return confirm('This will deactivate your account. You can contact support to recover it within 30 days. Continue?')">
+                            <i class="bi bi-trash"></i> Deactivate Account
+                        </button>
+                    </div>
+                </form>
+            <?php endif; ?>
         </div>
-    </form>
-<?php else: ?>
-    <div class="info-item" tabindex="0">
-        <div class="info-label">Name</div>
-        <div class="info-value"><?=htmlspecialchars($user['name'])?></div>
     </div>
-    <div class="info-item" tabindex="0">
-        <div class="info-label">Email</div>
-        <div class="info-value"><?=htmlspecialchars($user['email'])?></div>
-    </div>
+</div>
 
-        <form method="POST" class="mt-3" aria-label="Profile action buttons">
-    <input type="hidden" name="csrf_token" value="<?=htmlspecialchars($_SESSION['csrf_token'])?>" />
-    <button type="submit" name="edit_mode" class="btn btn-primary me-2" aria-label="Edit profile">
-        <i class="bi bi-pencil-square"></i> Edit Profile
-    </button>
-    <button 
-        type="submit" name="delete" class="btn btn-primary me-2"
-        onclick="return confirm('Are you sure you want to delete your account? This action cannot be undone.');"
-        aria-label="Delete account"
-    >
-        <i class="bi bi-trash"></i> Delete Account
-    </button>
-</form>
-
-<?php endif; ?>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Password strength indicator
+        const passwordInput = document.getElementById('password');
+        const strengthBar = document.getElementById('passwordStrengthBar');
+        
+        if (passwordInput) {
+            passwordInput.addEventListener('input', function() {
+                const password = this.value;
+                let strength = 0;
+                
+                // Length check
+                if (password.length >= 8) {
+                    strength += 50;
+                    document.getElementById('lengthReq').classList.add('valid');
+                    document.getElementById('lengthReq').querySelector('i').className = 'bi bi-check-circle';
+                } else {
+                    document.getElementById('lengthReq').classList.remove('valid');
+                    document.getElementById('lengthReq').querySelector('i').className = 'bi bi-circle';
+                }
+                
+                // Complexity check
+                if (/[a-zA-Z]/.test(password) && /\d/.test(password)) {
+                    strength += 50;
+                    document.getElementById('complexityReq').classList.add('valid');
+                    document.getElementById('complexityReq').querySelector('i').className = 'bi bi-check-circle';
+                } else {
+                    document.getElementById('complexityReq').classList.remove('valid');
+                    document.getElementById('complexityReq').querySelector('i').className = 'bi bi-circle';
+                }
+                
+                // Update strength bar
+                strengthBar.style.width = strength + '%';
+                strengthBar.style.backgroundColor = strength < 50 ? '#dc3545' : 
+                                                  strength < 80 ? '#ffc107' : '#28a745';
+            });
+        }
+    });
+</script>
+</body>
+</html>

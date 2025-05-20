@@ -234,7 +234,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="mb-4">
                 <h5 class="mb-3">Payment Method</h5>
                 <div id="paymentMethods">
-                    <div class="payment-method" onclick="selectPayment('Credit Card')" id="creditCard">
+                    <div class="payment-method" onclick="selectPayment('Credit Card')" id="creditcard">
                         <div class="payment-icon"><i class="bi bi-credit-card"></i></div>
                         <div>Credit Card</div>
                     </div>
@@ -269,6 +269,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     document.addEventListener('DOMContentLoaded', function() {
         selectPlan('Monthly');
         selectPayment('Credit Card');
+        
+        // Debugging
+        console.log('Initialized payment method:', document.getElementById('payment_method').value);
     });
     
     function selectPlan(plan) {
@@ -288,20 +291,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     function selectPayment(method) {
+        // Convert method to lowercase and remove spaces for ID matching
+        const methodId = method.toLowerCase().replace(/ /g, '');
+        
+        // Debugging
+        console.log('Selecting payment method:', method);
+        console.log('Looking for element with ID:', methodId);
+        
         // Update visual selection
         document.querySelectorAll('.payment-method').forEach(pm => {
             pm.classList.remove('selected');
         });
         
-        document.getElementById(method.toLowerCase().replace(' ', '')).classList.add('selected');
+        // Find the element and add selected class
+        const element = document.getElementById(methodId);
+        if (element) {
+            element.classList.add('selected');
+            console.log('Element found and selected');
+        } else {
+            console.error('Element not found for method:', methodId);
+        }
         
         // Update hidden input
         document.getElementById('payment_method').value = method;
+        console.log('Payment method set to:', method);
     }
     
     // Form validation
     document.getElementById('subscriptionForm').addEventListener('submit', function(e) {
-        if (!document.getElementById('plan_type').value || !document.getElementById('payment_method').value) {
+        const plan = document.getElementById('plan_type').value;
+        const payment = document.getElementById('payment_method').value;
+        
+        console.log('Form submission - Plan:', plan, 'Payment:', payment);
+        
+        if (!plan || !payment) {
             e.preventDefault();
             alert('Please select both a plan and payment method.');
         }

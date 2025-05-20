@@ -190,9 +190,12 @@ $history_result = $conn->query($history_query);
 <!-- Navbar -->
 <nav class="navbar navbar-expand-lg navbar-dark mb-4">
   <div class="container-fluid">
-    <a class="navbar-brand" href="#">
-        <i class="bi bi-play-circle-fill"></i> AdduFlix
+    <a class="navbar-brand" href="mainpage.php">
+        <div class="text-center">
+            <img src="https://raw.githubusercontent.com/Unonkgw/my-images/c8e3733c786597bbdc94c9e0b434572bb27044ae/adduflixlogo.svg" alt="AdduFlix Logo" class="logo">
+        </div>
     </a>
+            
     
     <div class="d-flex align-items-center">
         <div class="dropdown">
