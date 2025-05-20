@@ -38,7 +38,7 @@ $history_query = "SELECT c.*, vh.watch_time
                  JOIN Content c ON vh.content_id = c.id
                  WHERE vh.user_id = $user_id
                  ORDER BY vh.watch_time DESC
-                 LIMIT 3";
+                 LIMIT 8";
 $history_result = $conn->query($history_query);
 ?>
 
